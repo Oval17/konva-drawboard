@@ -281,6 +281,7 @@ function App() {
     if (isShapeTool(t)) {
       isDrawing.current = true;
       anchorRef.current = pos;
+      draftRef.current = null;
       setDraft(null);
       return;
     }
