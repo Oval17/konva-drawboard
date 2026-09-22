@@ -3,9 +3,20 @@ import { Stage, Layer, Line } from 'react-konva';
 import type Konva from 'konva';
 import { Toolbar } from './components/Toolbar';
 import { useLineHistory } from './hooks/useLineHistory';
-import type { Tool } from './types';
+import type { DrawnLine, Tool } from './types';
 import { STORAGE_KEY } from './types';
 import './App.css';
+
+function isValidLine(v: unknown): v is DrawnLine {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (o.tool !== 'pen' && o.tool !== 'eraser') return false;
+  if (typeof o.stroke !== 'string' || typeof o.strokeWidth !== 'number') return false;
+  if (!Array.isArray(o.points) || o.points.length < 2) return false;
+  if (!o.points.every((n) => typeof n === 'number' && Number.isFinite(n))) return false;
+  if (o.strokeWidth <= 0 || o.strokeWidth > 100) return false;
+  return true;
+}
 
 function getPointerPos(target: any): { x: number; y: number } | null {
   const stage = target.getStage?.();
@@ -14,7 +25,7 @@ function getPointerPos(target: any): { x: number; y: number } | null {
 }
 
 function App() {
-  const { lines, beginStroke, updateLastLine, undo, redo, clear, replaceAll, canUndo, canRedo } =
+  const { lines, beginStroke, updateLastLine, undo, redo, clear, reset, canUndo, canRedo } =
     useLineHistory([]);
   const [tool, setTool] = useState<Tool>('pen');
   const [color, setColor] = useState('#000000');
@@ -24,9 +35,12 @@ function App() {
   const toolRef = useRef(tool);
   const colorRef = useRef(color);
   const widthRef = useRef(strokeWidth);
-  toolRef.current = tool;
-  colorRef.current = color;
-  widthRef.current = strokeWidth;
+
+  useEffect(() => {
+    toolRef.current = tool;
+    colorRef.current = color;
+    widthRef.current = strokeWidth;
+  }, [tool, color, strokeWidth]);
 
   const [stageSize, setStageSize] = useState({
     width: typeof window !== 'undefined' ? window.innerWidth : 800,
@@ -40,13 +54,13 @@ function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Load saved drawing once
+  // Load saved drawing once (validated, without polluting undo stack)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) replaceAll(parsed);
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.every(isValidLine)) reset(parsed);
       }
     } catch {
       // ignore corrupt storage
@@ -55,8 +69,11 @@ function App() {
   }, []);
 
   // Keyboard shortcuts: ctrl/cmd+z undo, ctrl/cmd+shift+z or ctrl+y redo
+  // Skip when typing in inputs so native undo still works.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('input, textarea, select, [contenteditable]')) return;
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -90,6 +107,11 @@ function App() {
   const handleMove = useCallback(
     (e: any) => {
       if (!isDrawing.current) return;
+      // If mouse buttons released outside the stage, stop the stroke.
+      if (e?.evt && 'buttons' in e.evt && (e.evt as MouseEvent).buttons === 0) {
+        isDrawing.current = false;
+        return;
+      }
       const pos = getPointerPos(e.target);
       if (!pos) return;
       updateLastLine([pos.x, pos.y]);
@@ -101,16 +123,33 @@ function App() {
     isDrawing.current = false;
   }, []);
 
+  // End stroke even if pointer is released outside the canvas.
+  useEffect(() => {
+    const onUp = () => {
+      isDrawing.current = false;
+    };
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
+
   const handleExport = useCallback(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    const uri = stage.toDataURL({ pixelRatio: 2 });
-    const link = document.createElement('a');
-    link.download = 'konva-drawing.png';
-    link.href = uri;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    try {
+      const uri = stage.toDataURL({ pixelRatio: 2 });
+      const link = document.createElement('a');
+      link.download = 'konva-drawing.png';
+      link.href = uri;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch {
+      // canvas too large / tainted — ignore for Phase 1
+    }
   }, []);
 
   const handleSave = useCallback(() => {

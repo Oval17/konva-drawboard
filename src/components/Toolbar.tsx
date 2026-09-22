@@ -36,14 +36,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 }) => (
   <div className="toolbar" data-testid="toolbar">
     <div className="toolbar-group">
-      <button
+      <button type="button"
         onClick={() => onToolChange('pen')}
         className={tool === 'pen' ? 'active' : ''}
         aria-pressed={tool === 'pen'}
       >
         Pen
       </button>
-      <button
+      <button type="button"
         onClick={() => onToolChange('eraser')}
         className={tool === 'eraser' ? 'active' : ''}
         aria-pressed={tool === 'eraser'}
@@ -65,7 +65,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       </label>
       <div className="swatches">
         {PRESET_COLORS.map((c) => (
-          <button
+          <button type="button"
             key={c}
             className={`swatch${c === color ? ' selected' : ''}`}
             style={{ background: c }}
@@ -89,18 +89,18 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     </div>
 
     <div className="toolbar-group">
-      <button onClick={onUndo} disabled={!canUndo}>
+      <button type="button" onClick={onUndo} disabled={!canUndo}>
         Undo
       </button>
-      <button onClick={onRedo} disabled={!canRedo}>
+      <button type="button" onClick={onRedo} disabled={!canRedo}>
         Redo
       </button>
-      <button onClick={onClear}>Clear</button>
+      <button type="button" onClick={onClear}>Clear</button>
     </div>
 
     <div className="toolbar-group">
-      <button onClick={onExport}>Export PNG</button>
-      <button onClick={onSave}>Save</button>
+      <button type="button" onClick={onExport}>Export PNG</button>
+      <button type="button" onClick={onSave}>Save</button>
     </div>
   </div>
 );
