@@ -1,16 +1,80 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Line } from 'react-konva';
+import { Stage, Layer, Line, Rect, Ellipse, Arrow, Text as KonvaText } from 'react-konva';
 import type Konva from 'konva';
 import { Toolbar } from './components/Toolbar';
-import { useLineHistory } from './hooks/useLineHistory';
-import type { Tool } from './types';
-import { STORAGE_KEY, ERASER_WIDTH } from './types';
-import { isValidLine } from './validation';
+import { useHistory } from './hooks/useHistory';
+import type { CanvasDoc, Shape, Tool } from './types';
+import {
+  EMPTY_DOC,
+  STORAGE_KEY,
+  STORAGE_VERSION,
+  ERASER_WIDTH,
+  TEXT_FONT_SIZE,
+  isShapeTool,
+} from './types';
+import { buildShape, type Point } from './shapes';
+import { normalizeDoc } from './validation';
 import './App.css';
 
+function renderShape(s: Shape, i: number, opacity = 1) {
+  switch (s.kind) {
+    case 'rect':
+      return (
+        <Rect
+          key={i}
+          x={s.x}
+          y={s.y}
+          width={s.width}
+          height={s.height}
+          stroke={s.stroke}
+          strokeWidth={s.strokeWidth}
+          opacity={opacity}
+        />
+      );
+    case 'ellipse':
+      return (
+        <Ellipse
+          key={i}
+          x={s.x}
+          y={s.y}
+          radiusX={s.radiusX}
+          radiusY={s.radiusY}
+          stroke={s.stroke}
+          strokeWidth={s.strokeWidth}
+          opacity={opacity}
+        />
+      );
+    case 'arrow':
+      return (
+        <Arrow
+          key={i}
+          points={s.points}
+          stroke={s.stroke}
+          strokeWidth={s.strokeWidth}
+          pointerLength={10}
+          pointerWidth={10}
+          opacity={opacity}
+        />
+      );
+    case 'text':
+      return (
+        <KonvaText
+          key={i}
+          x={s.x}
+          y={s.y}
+          text={s.text}
+          fontSize={s.fontSize}
+          fill={s.fill}
+          opacity={opacity}
+        />
+      );
+  }
+}
+
 function App() {
-  const { lines, beginStroke, updateLastLine, undo, redo, clear, reset, canUndo, canRedo } =
-    useLineHistory([]);
+  const { state: doc, commit, stage, undo, redo, reset, canUndo, canRedo } =
+    useHistory<CanvasDoc>(EMPTY_DOC);
+  const { lines, shapes } = doc;
   const [tool, setTool] = useState<Tool>('pen');
   const [color, setColor] = useState('#000000');
   const [strokeWidth, setStrokeWidth] = useState(3);
@@ -20,8 +84,25 @@ function App() {
   const toolRef = useRef(tool);
   const colorRef = useRef(color);
   const widthRef = useRef(strokeWidth);
+  const anchorRef = useRef<Point | null>(null);
+  const [draft, setDraft] = useState<Shape | null>(null);
+  const [textDraft, setTextDraft] = useState<Point | null>(null);
+  const [textValue, setTextValue] = useState('');
   const [status, setStatus] = useState<string | null>(null);
   const loadedRef = useRef(false);
+  // Live mirrors so window-level pointer-up and blur/Enter races see
+  // current values instead of stale render closures.
+  const draftRef = useRef<Shape | null>(null);
+  const textDraftRef = useRef<Point | null>(null);
+  const textValueRef = useRef('');
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  useEffect(() => {
+    textDraftRef.current = textDraft;
+    textValueRef.current = textValue;
+  }, [textDraft, textValue]);
 
   useEffect(() => {
     toolRef.current = tool;
@@ -56,13 +137,16 @@ function App() {
     };
   }, []);
 
-  // Load saved drawing once (validated, without polluting undo stack)
+  const serialize = useCallback((d: CanvasDoc) => JSON.stringify({ version: STORAGE_VERSION, ...d }), []);
+
+  // Load saved drawing once (validated, without polluting undo stack).
+  // Accepts the legacy v1 bare-lines array.
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed: unknown = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.every(isValidLine)) reset(parsed);
+        const normalized = normalizeDoc(JSON.parse(raw) as unknown);
+        if (normalized) reset(normalized);
       }
     } catch {
       // ignore corrupt storage
@@ -78,13 +162,13 @@ function App() {
     setStatus(null);
     const t = window.setTimeout(() => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(lines));
+        localStorage.setItem(STORAGE_KEY, serialize(doc));
       } catch {
         setStatus('Autosave failed: storage full or unavailable.');
       }
     }, 500);
     return () => window.clearTimeout(t);
-  }, [lines]);
+  }, [doc, serialize]);
 
   // Keyboard shortcuts: ctrl/cmd+z undo, ctrl/cmd+shift+z or ctrl+y redo
   // Skip when typing in inputs so native undo still works.
@@ -106,53 +190,160 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [undo, redo]);
 
-  const getStagePos = useCallback(() => {
+  const getStagePos = useCallback((): Point | null => {
     const pos = stageRef.current?.getPointerPosition();
     return pos ?? null;
   }, []);
 
-  const handleStart = useCallback(
-    () => {
-      const pos = getStagePos();
-      if (!pos) return;
-      isDrawing.current = true;
-      const t = toolRef.current;
-      beginStroke({
-        tool: t,
-        points: [pos.x, pos.y],
-        // NB: stroke is ignored for eraser (destination-out), but keep a
-        // stable value so saved lines validate.
-        stroke: t === 'pen' ? colorRef.current : '#ffffff',
-        strokeWidth: t === 'pen' ? widthRef.current : ERASER_WIDTH,
-      });
+  // Single finish path for drag-shapes: Stage mouseup, window mouseup
+  // (release outside the canvas), touchend, and tool switches all commit
+  // the in-progress preview instead of silently discarding it. Idempotent:
+  // without an active drag it is a no-op, so double-firing is harmless.
+  const finishShape = useCallback(
+    (shouldCommit: boolean) => {
+      isDrawing.current = false;
+      anchorRef.current = null;
+      const finished = draftRef.current;
+      draftRef.current = null;
+      setDraft(null);
+      if (shouldCommit && finished) {
+        commit((prev) => ({ ...prev, shapes: [...prev.shapes, finished] }));
+      }
     },
-    [beginStroke, getStagePos]
+    [commit]
   );
+
+  const commitText = useCallback(() => {
+    // Ref guard: Enter commits, then the ensuing blur re-enters with a stale
+    // closure — the nulled ref makes the second call a no-op (no double shape).
+    const at = textDraftRef.current;
+    if (!at) return;
+    textDraftRef.current = null;
+    const value = textValueRef.current.trim();
+    setTextDraft(null);
+    setTextValue('');
+    if (value) {
+      const fill = colorRef.current;
+      commit((prev) => ({
+        ...prev,
+        shapes: [
+          ...prev.shapes,
+          { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
+        ],
+      }));
+    }
+  }, [commit]);
+
+  const cancelText = useCallback(() => {
+    textDraftRef.current = null;
+    setTextDraft(null);
+    setTextValue('');
+  }, []);
+
+  const handleToolChange = useCallback(
+    (t: Tool) => {
+      // Switching tools finishes any in-progress shape instead of dropping it.
+      finishShape(true);
+      cancelText();
+      setTool(t);
+    },
+    [finishShape, cancelText]
+  );
+
+  const handleStart = useCallback(() => {
+    const pos = getStagePos();
+    if (!pos) return;
+    const t = toolRef.current;
+    if (t === 'text') {
+      // A pending draft was already committed by the input's blur; if the
+      // user clicked without blurring (same-tick), commit it here first.
+      const pending = textDraftRef.current;
+      if (pending) {
+        const value = textValueRef.current.trim();
+        textDraftRef.current = null;
+        if (value) {
+          const fill = colorRef.current;
+          const at = pending;
+          commit((prev) => ({
+            ...prev,
+            shapes: [
+              ...prev.shapes,
+              { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
+            ],
+          }));
+        }
+      }
+      textDraftRef.current = pos;
+      setTextDraft(pos);
+      setTextValue('');
+      return;
+    }
+    if (isShapeTool(t)) {
+      isDrawing.current = true;
+      anchorRef.current = pos;
+      draftRef.current = null;
+      setDraft(null);
+      return;
+    }
+    isDrawing.current = true;
+    const lineTool = t; // 'pen' | 'eraser'
+    commit((prev) => ({
+      ...prev,
+      lines: [
+        ...prev.lines,
+        {
+          tool: lineTool,
+          points: [pos.x, pos.y],
+          // NB: stroke is ignored for eraser (destination-out), but keep a
+          // stable value so saved lines validate.
+          stroke: lineTool === 'pen' ? colorRef.current : '#ffffff',
+          strokeWidth: lineTool === 'pen' ? widthRef.current : ERASER_WIDTH,
+        },
+      ],
+    }));
+  }, [commit, getStagePos]);
 
   const handleMove = useCallback(
     (e: { evt?: unknown }) => {
       if (!isDrawing.current) return;
-      // If mouse buttons released outside the stage, stop the stroke.
+      // If mouse buttons released outside the stage, finish (commit partial)
+      // rather than discarding the in-progress stroke or shape.
       const evt = e?.evt as MouseEvent | undefined;
       if (evt && 'buttons' in evt && evt.buttons === 0) {
-        isDrawing.current = false;
+        finishShape(true);
         return;
       }
       const pos = getStagePos();
       if (!pos) return;
-      updateLastLine([pos.x, pos.y]);
+      const t = toolRef.current;
+      if (isShapeTool(t) && t !== 'text') {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        const preview = buildShape(t, anchor, pos, colorRef.current, widthRef.current);
+        draftRef.current = preview;
+        setDraft(preview);
+        return;
+      }
+      const x = pos.x;
+      const y = pos.y;
+      stage((prev) => {
+        if (prev.lines.length === 0) return prev;
+        const last = prev.lines[prev.lines.length - 1];
+        const updated = { ...last, points: last.points.concat([x, y]) };
+        return { ...prev, lines: [...prev.lines.slice(0, -1), updated] };
+      });
     },
-    [updateLastLine, getStagePos]
+    [stage, getStagePos, finishShape]
   );
 
   const handleEnd = useCallback(() => {
-    isDrawing.current = false;
-  }, []);
+    finishShape(true);
+  }, [finishShape]);
 
-  // End stroke even if pointer is released outside the canvas.
+  // End stroke even if pointer is released outside the canvas (commits).
   useEffect(() => {
     const onUp = () => {
-      isDrawing.current = false;
+      finishShape(true);
     };
     window.addEventListener('mouseup', onUp);
     window.addEventListener('touchend', onUp);
@@ -160,16 +351,24 @@ function App() {
       window.removeEventListener('mouseup', onUp);
       window.removeEventListener('touchend', onUp);
     };
-  }, []);
+  }, [finishShape]);
+
+  const handleClear = useCallback(() => {
+    finishShape(false);
+    cancelText();
+    if (lines.length === 0 && shapes.length === 0) return;
+    // Fresh object: never commit the shared EMPTY_DOC reference.
+    commit({ lines: [], shapes: [] });
+  }, [lines.length, shapes.length, commit, finishShape, cancelText]);
 
   const handleExport = useCallback(() => {
-    const stage = stageRef.current;
-    if (!stage) {
+    const stageNode = stageRef.current;
+    if (!stageNode) {
       setStatus('Export failed: canvas not ready.');
       return;
     }
     try {
-      const uri = stage.toDataURL({ pixelRatio: 2 });
+      const uri = stageNode.toDataURL({ pixelRatio: 2 });
       const link = document.createElement('a');
       link.download = 'konva-drawing.png';
       link.href = uri;
@@ -184,19 +383,19 @@ function App() {
 
   const handleSave = useCallback(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(lines));
+      localStorage.setItem(STORAGE_KEY, serialize(doc));
       setStatus('Saved.');
     } catch {
       setStatus('Save failed: storage full or unavailable.');
     }
-  }, [lines]);
+  }, [doc, serialize]);
 
   return (
     <div className="App">
       <h1 className="app-title">Konva Drawing Board</h1>
       <Toolbar
         tool={tool}
-        onToolChange={setTool}
+        onToolChange={handleToolChange}
         color={color}
         onColorChange={setColor}
         strokeWidth={strokeWidth}
@@ -205,7 +404,7 @@ function App() {
         canRedo={canRedo}
         onUndo={undo}
         onRedo={redo}
-        onClear={clear}
+        onClear={handleClear}
         onExport={handleExport}
         onSave={handleSave}
       />
@@ -239,7 +438,29 @@ function App() {
               />
             ))}
           </Layer>
+          <Layer>
+            {shapes.map((s, i) => renderShape(s, i))}
+            {draft && renderShape(draft, shapes.length, 0.7)}
+          </Layer>
         </Stage>
+        {textDraft && (
+          <input
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
+            className="text-input"
+            style={{ left: textDraft.x, top: textDraft.y, color }}
+            value={textValue}
+            maxLength={500}
+            placeholder="Type text, Enter to place"
+            aria-label="shape text"
+            onChange={(e) => setTextValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitText();
+              else if (e.key === 'Escape') cancelText();
+            }}
+            onBlur={commitText}
+          />
+        )}
       </div>
       {status && (
         <p role="status" className="hint">
@@ -247,7 +468,8 @@ function App() {
         </p>
       )}
       <p className="hint">
-        Draw with mouse or touch. Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo. Strokes: {lines.length}
+        Draw with mouse or touch. Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo. Strokes: {lines.length}{' '}
+        Shapes: {shapes.length} (eraser affects pen strokes only).
       </p>
     </div>
   );

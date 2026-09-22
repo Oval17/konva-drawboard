@@ -49,6 +49,29 @@ test('updateLastLine appends without creating undo step', () => {
   expect(result.current.lines).toHaveLength(0);
 });
 
+test('clear on empty canvas does not create an undo step', () => {
+  const { result } = renderHook(() => useLineHistory([]));
+  act(() => {
+    result.current.clear();
+  });
+  expect(result.current.canUndo).toBe(false);
+});
+
+test('clear pushes one undo step and undo restores', () => {
+  const { result } = renderHook(() => useLineHistory([]));
+  act(() => {
+    result.current.beginStroke(line());
+  });
+  act(() => {
+    result.current.clear();
+  });
+  expect(result.current.lines).toHaveLength(0);
+  act(() => {
+    result.current.undo();
+  });
+  expect(result.current.lines).toHaveLength(1);
+});
+
 test('isValidLine rejects bad widths and non-finite points', () => {
   expect(isValidLine(line())).toBe(true);
   expect(isValidLine(line({ strokeWidth: 0 }))).toBe(false);
