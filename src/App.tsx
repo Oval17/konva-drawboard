@@ -3,59 +3,18 @@ import { Stage, Layer, Line, Rect, Ellipse, Arrow, Text as KonvaText } from 'rea
 import type Konva from 'konva';
 import { Toolbar } from './components/Toolbar';
 import { useHistory } from './hooks/useHistory';
-import type { CanvasDoc, Shape, ShapeKind, Tool } from './types';
+import type { CanvasDoc, Shape, Tool } from './types';
 import {
   EMPTY_DOC,
   STORAGE_KEY,
   STORAGE_VERSION,
   ERASER_WIDTH,
   TEXT_FONT_SIZE,
-  MIN_SHAPE_SIZE,
   isShapeTool,
 } from './types';
+import { buildShape, type Point } from './shapes';
 import { normalizeDoc } from './validation';
 import './App.css';
-
-interface Point {
-  x: number;
-  y: number;
-}
-
-function buildShape(
-  kind: Exclude<ShapeKind, 'text'>,
-  a: Point,
-  b: Point,
-  stroke: string,
-  strokeWidth: number
-): Shape | null {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  if (Math.abs(dx) < MIN_SHAPE_SIZE && Math.abs(dy) < MIN_SHAPE_SIZE) return null;
-  switch (kind) {
-    case 'rect':
-      return {
-        kind: 'rect',
-        x: Math.min(a.x, b.x),
-        y: Math.min(a.y, b.y),
-        width: Math.abs(dx),
-        height: Math.abs(dy),
-        stroke,
-        strokeWidth,
-      };
-    case 'ellipse':
-      return {
-        kind: 'ellipse',
-        x: (a.x + b.x) / 2,
-        y: (a.y + b.y) / 2,
-        radiusX: Math.abs(dx) / 2,
-        radiusY: Math.abs(dy) / 2,
-        stroke,
-        strokeWidth,
-      };
-    case 'arrow':
-      return { kind: 'arrow', points: [a.x, a.y, b.x, b.y], stroke, strokeWidth };
-  }
-}
 
 function renderShape(s: Shape, i: number, opacity = 1) {
   switch (s.kind) {
@@ -131,6 +90,19 @@ function App() {
   const [textValue, setTextValue] = useState('');
   const [status, setStatus] = useState<string | null>(null);
   const loadedRef = useRef(false);
+  // Live mirrors so window-level pointer-up and blur/Enter races see
+  // current values instead of stale render closures.
+  const draftRef = useRef<Shape | null>(null);
+  const textDraftRef = useRef<Point | null>(null);
+  const textValueRef = useRef('');
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  useEffect(() => {
+    textDraftRef.current = textDraft;
+    textValueRef.current = textValue;
+  }, [textDraft, textValue]);
 
   useEffect(() => {
     toolRef.current = tool;
@@ -223,21 +195,59 @@ function App() {
     return pos ?? null;
   }, []);
 
-  const cancelShapeFlow = useCallback(() => {
-    isDrawing.current = false;
-    anchorRef.current = null;
-    setDraft(null);
+  // Single finish path for drag-shapes: Stage mouseup, window mouseup
+  // (release outside the canvas), touchend, and tool switches all commit
+  // the in-progress preview instead of silently discarding it. Idempotent:
+  // without an active drag it is a no-op, so double-firing is harmless.
+  const finishShape = useCallback(
+    (shouldCommit: boolean) => {
+      isDrawing.current = false;
+      anchorRef.current = null;
+      const finished = draftRef.current;
+      draftRef.current = null;
+      setDraft(null);
+      if (shouldCommit && finished) {
+        commit((prev) => ({ ...prev, shapes: [...prev.shapes, finished] }));
+      }
+    },
+    [commit]
+  );
+
+  const commitText = useCallback(() => {
+    // Ref guard: Enter commits, then the ensuing blur re-enters with a stale
+    // closure — the nulled ref makes the second call a no-op (no double shape).
+    const at = textDraftRef.current;
+    if (!at) return;
+    textDraftRef.current = null;
+    const value = textValueRef.current.trim();
+    setTextDraft(null);
+    setTextValue('');
+    if (value) {
+      const fill = colorRef.current;
+      commit((prev) => ({
+        ...prev,
+        shapes: [
+          ...prev.shapes,
+          { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
+        ],
+      }));
+    }
+  }, [commit]);
+
+  const cancelText = useCallback(() => {
+    textDraftRef.current = null;
+    setTextDraft(null);
+    setTextValue('');
   }, []);
 
   const handleToolChange = useCallback(
     (t: Tool) => {
-      // Switching tools abandons any in-progress shape or text draft.
-      cancelShapeFlow();
-      setTextDraft(null);
-      setTextValue('');
+      // Switching tools finishes any in-progress shape instead of dropping it.
+      finishShape(true);
+      cancelText();
       setTool(t);
     },
-    [cancelShapeFlow]
+    [finishShape, cancelText]
   );
 
   const handleStart = useCallback(() => {
@@ -245,6 +255,25 @@ function App() {
     if (!pos) return;
     const t = toolRef.current;
     if (t === 'text') {
+      // A pending draft was already committed by the input's blur; if the
+      // user clicked without blurring (same-tick), commit it here first.
+      const pending = textDraftRef.current;
+      if (pending) {
+        const value = textValueRef.current.trim();
+        textDraftRef.current = null;
+        if (value) {
+          const fill = colorRef.current;
+          const at = pending;
+          commit((prev) => ({
+            ...prev,
+            shapes: [
+              ...prev.shapes,
+              { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
+            ],
+          }));
+        }
+      }
+      textDraftRef.current = pos;
       setTextDraft(pos);
       setTextValue('');
       return;
@@ -276,10 +305,11 @@ function App() {
   const handleMove = useCallback(
     (e: { evt?: unknown }) => {
       if (!isDrawing.current) return;
-      // If mouse buttons released outside the stage, stop the stroke.
+      // If mouse buttons released outside the stage, finish (commit partial)
+      // rather than discarding the in-progress stroke or shape.
       const evt = e?.evt as MouseEvent | undefined;
       if (evt && 'buttons' in evt && evt.buttons === 0) {
-        cancelShapeFlow();
+        finishShape(true);
         return;
       }
       const pos = getStagePos();
@@ -288,7 +318,9 @@ function App() {
       if (isShapeTool(t) && t !== 'text') {
         const anchor = anchorRef.current;
         if (!anchor) return;
-        setDraft(buildShape(t, anchor, pos, colorRef.current, widthRef.current));
+        const preview = buildShape(t, anchor, pos, colorRef.current, widthRef.current);
+        draftRef.current = preview;
+        setDraft(preview);
         return;
       }
       const x = pos.x;
@@ -300,28 +332,17 @@ function App() {
         return { ...prev, lines: [...prev.lines.slice(0, -1), updated] };
       });
     },
-    [stage, getStagePos, cancelShapeFlow]
+    [stage, getStagePos, finishShape]
   );
 
   const handleEnd = useCallback(() => {
-    if (!isDrawing.current) return;
-    isDrawing.current = false;
-    // Commit a finished drag-shape as a single undo step; the live preview
-    // lived outside history (draft state), so undo removes the whole shape.
-    if (draft && anchorRef.current) {
-      const finished = draft;
-      commit((prev) => ({ ...prev, shapes: [...prev.shapes, finished] }));
-    }
-    anchorRef.current = null;
-    setDraft(null);
-  }, [draft, commit]);
+    finishShape(true);
+  }, [finishShape]);
 
-  // End stroke even if pointer is released outside the canvas.
+  // End stroke even if pointer is released outside the canvas (commits).
   useEffect(() => {
     const onUp = () => {
-      isDrawing.current = false;
-      anchorRef.current = null;
-      setDraft(null);
+      finishShape(true);
     };
     window.addEventListener('mouseup', onUp);
     window.addEventListener('touchend', onUp);
@@ -329,37 +350,15 @@ function App() {
       window.removeEventListener('mouseup', onUp);
       window.removeEventListener('touchend', onUp);
     };
-  }, []);
-
-  const commitText = useCallback(() => {
-    if (!textDraft) return;
-    const value = textValue.trim();
-    if (value) {
-      const at = textDraft;
-      const fill = colorRef.current;
-      commit((prev) => ({
-        ...prev,
-        shapes: [
-          ...prev.shapes,
-          { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
-        ],
-      }));
-    }
-    setTextDraft(null);
-    setTextValue('');
-  }, [textDraft, textValue, commit]);
-
-  const cancelText = useCallback(() => {
-    setTextDraft(null);
-    setTextValue('');
-  }, []);
+  }, [finishShape]);
 
   const handleClear = useCallback(() => {
-    cancelShapeFlow();
+    finishShape(false);
     cancelText();
     if (lines.length === 0 && shapes.length === 0) return;
-    commit(EMPTY_DOC);
-  }, [lines.length, shapes.length, commit, cancelShapeFlow, cancelText]);
+    // Fresh object: never commit the shared EMPTY_DOC reference.
+    commit({ lines: [], shapes: [] });
+  }, [lines.length, shapes.length, commit, finishShape, cancelText]);
 
   const handleExport = useCallback(() => {
     const stageNode = stageRef.current;

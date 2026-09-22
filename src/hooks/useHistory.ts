@@ -75,8 +75,12 @@ export function useHistory<T>(initial: T) {
     [sync]
   );
 
+  /** Live read of current state for guards (avoids stale render closures). */
+  const get = useCallback(() => stateRef.current, []);
+
   return {
     state,
+    get,
     commit,
     stage,
     undo,

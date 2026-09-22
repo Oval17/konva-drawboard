@@ -21,8 +21,9 @@ export function useLineHistory(initial: DrawnLine[] = []) {
     undo: h.undo,
     redo: h.redo,
     clear: () => {
-      // Avoid pushing no-op clears onto the undo stack.
-      if (h.state.length === 0) return;
+      // Live guard: h.state would be stale if clear fires from a
+      // window-level listener. Avoid pushing no-op clears onto history.
+      if (h.get().length === 0) return;
       h.commit([]);
     },
     reset: h.reset,
