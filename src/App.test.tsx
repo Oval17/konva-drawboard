@@ -1,9 +1,34 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import App from './App';
 
-test('renders learn react link', () => {
+jest.mock('react-konva', () => {
+  const React = require('react');
+  return {
+    Stage: React.forwardRef((props: any, ref: any) =>
+      React.createElement('div', { ...props, ref, 'data-testid': 'stage' })
+    ),
+    Layer: (props: any) => React.createElement('div', props),
+    Line: () => null,
+  };
+});
+
+test('renders toolbar with pen and eraser', () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(screen.getByText('Pen')).toBeInTheDocument();
+  expect(screen.getByText('Eraser')).toBeInTheDocument();
+  expect(screen.getByText('Export PNG')).toBeInTheDocument();
+});
+
+test('undo and redo buttons start disabled', () => {
+  render(<App />);
+  expect(screen.getByText('Undo')).toBeDisabled();
+  expect(screen.getByText('Redo')).toBeDisabled();
+  expect(screen.getByText(/Strokes: 0/)).toBeInTheDocument();
+});
+
+test('switching to eraser updates pressed state', () => {
+  render(<App />);
+  const eraser = screen.getByText('Eraser');
+  fireEvent.click(eraser);
+  expect(eraser).toHaveAttribute('aria-pressed', 'true');
 });
