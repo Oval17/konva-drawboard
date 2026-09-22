@@ -2,6 +2,7 @@
   "name": "konva-free-draw-demo",
   "version": "0.1.0",
   "private": true,
+  "homepage": "https://oval17.github.io/konva-drawboard",
   "dependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.6.4",

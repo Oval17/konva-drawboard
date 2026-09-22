@@ -2,10 +2,17 @@
 
 A simple and interactive drawing board built with React and Konva.js. This application allows users to draw freely on a canvas with pen and eraser tools.
 
+## Live demo
+
+**https://oval17.github.io/konva-drawboard/** (auto-deployed from `main`)
+
 ## Features
 
 - **Free-hand Drawing**: Draw naturally with a pen tool
+- **Shapes**: Rectangle, ellipse, arrow, and click-to-place text
 - **Eraser Tool**: Erase parts of your drawing
+- **History**: Stroke/shape-level undo and redo with keyboard shortcuts
+- **Export & Save**: PNG export, manual save, and debounced autosave to localStorage
 - **Responsive Design**: Adapts to different screen sizes
 - **Real-time Drawing**: Smooth drawing experience with mouse events
 - **TypeScript Support**: Built with TypeScript for better type safety
