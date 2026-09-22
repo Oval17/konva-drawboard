@@ -9,6 +9,10 @@ jest.mock('react-konva', () => {
     ),
     Layer: (props: any) => React.createElement('div', props),
     Line: () => null,
+    Rect: () => null,
+    Ellipse: () => null,
+    Arrow: () => null,
+    Text: () => null,
   };
 });
 
@@ -17,6 +21,21 @@ test('renders toolbar with pen and eraser', () => {
   expect(screen.getByText('Pen')).toBeInTheDocument();
   expect(screen.getByText('Eraser')).toBeInTheDocument();
   expect(screen.getByText('Export PNG')).toBeInTheDocument();
+});
+
+test('renders shape tools', () => {
+  render(<App />);
+  for (const label of ['Rect', 'Ellipse', 'Arrow', 'Text']) {
+    expect(screen.getByText(label)).toBeInTheDocument();
+  }
+});
+
+test('selecting a shape tool updates pressed state', () => {
+  render(<App />);
+  const rect = screen.getByText('Rect');
+  fireEvent.click(rect);
+  expect(rect).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByText('Pen')).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('undo and redo buttons start disabled', () => {
