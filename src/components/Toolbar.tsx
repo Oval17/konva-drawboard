@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Tool } from '../types';
+import { MIN_STROKE_WIDTH, MAX_STROKE_WIDTH } from '../types';
 
 interface ToolbarProps {
   tool: Tool;
@@ -79,8 +80,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         Width {strokeWidth}px
         <input
           type="range"
-          min={1}
-          max={30}
+          min={MIN_STROKE_WIDTH}
+          max={MAX_STROKE_WIDTH}
           value={strokeWidth}
           onChange={(e) => onStrokeWidthChange(Number(e.target.value))}
           aria-label="stroke width"
