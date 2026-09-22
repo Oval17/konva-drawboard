@@ -3,6 +3,8 @@ name: Deploy demo to GitHub Pages
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -31,6 +33,8 @@ jobs:
           path: build
 
   deploy:
+    # PRs still get test+build signal from the build job; only main deploys.
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
