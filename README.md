@@ -6,6 +6,14 @@ A simple and interactive drawing board built with React and Konva.js. This appli
 
 **https://oval17.github.io/konva-drawboard/** (auto-deployed from `main`)
 
+## Deployment
+
+- **GitHub Pages**: auto-deployed from `main` by `.github/workflows/deploy-pages.yml`.
+- **Netlify**: import the repo with build command `npm run build` and publish
+  directory `build` (also in `netlify.toml`). Asset URLs are relative
+  (`"homepage": "."`), so the same build works from the Pages sub-path and
+  from the site root.
+
 ## Features
 
 - **Free-hand Drawing**: Draw naturally with a pen tool
