@@ -250,58 +250,66 @@ function App() {
     [finishShape, cancelText]
   );
 
-  const handleStart = useCallback(() => {
-    const pos = getStagePos();
-    if (!pos) return;
-    const t = toolRef.current;
-    if (t === 'text') {
-      // A pending draft was already committed by the input's blur; if the
-      // user clicked without blurring (same-tick), commit it here first.
-      const pending = textDraftRef.current;
-      if (pending) {
-        const value = textValueRef.current.trim();
-        textDraftRef.current = null;
-        if (value) {
-          const fill = colorRef.current;
-          const at = pending;
-          commit((prev) => ({
-            ...prev,
-            shapes: [
-              ...prev.shapes,
-              { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
-            ],
-          }));
+  const handleStart = useCallback(
+    (e?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+      const pos = getStagePos();
+      if (!pos) return;
+      const t = toolRef.current;
+      if (t === 'text') {
+        // Keep the text input focused. The browser's default mousedown/touchstart
+        // action moves focus away from the input (which autoFocuses when it mounts
+        // during this same event), firing onBlur and discarding the empty draft
+        // ~1ms after it appears. preventDefault stops that focus steal.
+        e?.evt?.preventDefault?.();
+        // A pending draft was already committed by the input's blur; if the
+        // user clicked without blurring (same-tick), commit it here first.
+        const pending = textDraftRef.current;
+        if (pending) {
+          const value = textValueRef.current.trim();
+          textDraftRef.current = null;
+          if (value) {
+            const fill = colorRef.current;
+            const at = pending;
+            commit((prev) => ({
+              ...prev,
+              shapes: [
+                ...prev.shapes,
+                { kind: 'text', x: at.x, y: at.y, text: value, fontSize: TEXT_FONT_SIZE, fill },
+              ],
+            }));
+          }
         }
+        textDraftRef.current = pos;
+        setTextDraft(pos);
+        setTextValue('');
+        return;
       }
-      textDraftRef.current = pos;
-      setTextDraft(pos);
-      setTextValue('');
-      return;
-    }
-    if (isShapeTool(t)) {
+      if (isShapeTool(t)) {
+        isDrawing.current = true;
+        anchorRef.current = pos;
+        draftRef.current = null;
+        setDraft(null);
+        return;
+      }
       isDrawing.current = true;
-      anchorRef.current = pos;
-      draftRef.current = null;
-      setDraft(null);
-      return;
-    }
-    isDrawing.current = true;
-    const lineTool = t; // 'pen' | 'eraser'
-    commit((prev) => ({
-      ...prev,
-      lines: [
-        ...prev.lines,
-        {
-          tool: lineTool,
-          points: [pos.x, pos.y],
-          // NB: stroke is ignored for eraser (destination-out), but keep a
-          // stable value so saved lines validate.
-          stroke: lineTool === 'pen' ? colorRef.current : '#ffffff',
-          strokeWidth: lineTool === 'pen' ? widthRef.current : ERASER_WIDTH,
-        },
-      ],
-    }));
-  }, [commit, getStagePos]);
+      const lineTool = t; // 'pen' | 'eraser'
+      commit((prev) => ({
+        ...prev,
+        lines: [
+          ...prev.lines,
+          {
+            tool: lineTool,
+            points: [pos.x, pos.y],
+            // NB: stroke is ignored for eraser (destination-out), but keep a
+            // stable value so saved lines validate.
+            stroke: lineTool === 'pen' ? colorRef.current : '#ffffff',
+            strokeWidth: lineTool === 'pen' ? widthRef.current : ERASER_WIDTH,
+          },
+        ],
+      }));
+    },
+    [commit, getStagePos]
+  );
 
   const handleMove = useCallback(
     (e: { evt?: unknown }) => {
